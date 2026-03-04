@@ -17,6 +17,7 @@ export default function Chat() {
   const [sending, setSending] = useState(false);
   const [socketReady, setSocketReady] = useState(false);
   const [activeProfileCardId, setActiveProfileCardId] = useState('');
+  const [showTeamMembersCard, setShowTeamMembersCard] = useState(false);
   const [unreadTeamById, setUnreadTeamById] = useState({});
   const [unreadDmByUser, setUnreadDmByUser] = useState({});
   const [error, setError] = useState('');
@@ -33,6 +34,12 @@ export default function Chat() {
     () => teams.find(team => team.id === selectedTeamId) || null,
     [teams, selectedTeamId]
   );
+  const selectedTeamMembers = useMemo(() => {
+    if (!selectedTeam) return [];
+    const owner = selectedTeam.username ? [selectedTeam.username] : [];
+    const accepted = Array.isArray(selectedTeam.acceptedUsernames) ? selectedTeam.acceptedUsernames : [];
+    return Array.from(new Set([...owner, ...accepted].filter(Boolean)));
+  }, [selectedTeam]);
 
   const unreadStorageKey = user?.username ? `teamFinderUnread_${user.username}` : null;
   const totalTeamUnread = Object.values(unreadTeamById).reduce((sum, count) => sum + count, 0);
@@ -304,6 +311,7 @@ export default function Chat() {
     if (!token || !selectedTeamId) return;
     fetchMessages(selectedTeamId);
     markTeamAsRead(selectedTeamId);
+    setShowTeamMembersCard(false);
   }, [token, selectedTeamId]);
 
   useEffect(() => {
@@ -311,6 +319,12 @@ export default function Chat() {
     fetchDmMessages(selectedDmUser);
     markDmAsRead(selectedDmUser);
   }, [token, selectedDmUser]);
+
+  useEffect(() => {
+    if (viewMode !== 'team') {
+      setShowTeamMembersCard(false);
+    }
+  }, [viewMode]);
 
   useEffect(() => {
     if (!token) return;
@@ -418,11 +432,14 @@ export default function Chat() {
       const target = event.target;
       if (
         target.closest('[data-profile-card="true"]') ||
-        target.closest('[data-profile-trigger="true"]')
+        target.closest('[data-profile-trigger="true"]') ||
+        target.closest('[data-team-members-card="true"]') ||
+        target.closest('[data-team-members-trigger="true"]')
       ) {
         return;
       }
       setActiveProfileCardId('');
+      setShowTeamMembersCard(false);
     };
 
     document.addEventListener('mousedown', handleOutsideClick);
@@ -524,8 +541,18 @@ export default function Chat() {
       padding: '14px 16px',
       display: 'flex',
       alignItems: 'center',
-      justifyContent: 'space-between'
+      justifyContent: 'space-between',
+      position: 'relative'
     },
+    headerLeft: (clickable) => ({
+      display: 'flex',
+      alignItems: 'center',
+      gap: '10px',
+      cursor: clickable ? 'pointer' : 'default',
+      padding: clickable ? '4px 6px' : '0',
+      borderRadius: '10px',
+      transition: 'background-color 0.15s ease'
+    }),
     status: {
       fontSize: '12px',
       color: socketReady ? '#059669' : '#6b7280',
@@ -585,6 +612,53 @@ export default function Chat() {
       alignItems: 'center',
       gap: '10px',
       marginBottom: '8px'
+    },
+    teamMembersCard: {
+      position: 'absolute',
+      top: '66px',
+      left: '12px',
+      width: '290px',
+      maxHeight: '360px',
+      overflowY: 'auto',
+      backgroundColor: '#fff',
+      border: '1px solid #dfe6f4',
+      borderRadius: '14px',
+      boxShadow: '0 14px 32px rgba(15, 23, 42, 0.18)',
+      padding: '10px',
+      zIndex: 30
+    },
+    teamMembersTitle: {
+      margin: '2px 0 10px 0',
+      fontSize: '12px',
+      color: '#6b7280',
+      fontWeight: 700
+    },
+    memberRow: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: '10px',
+      border: '1px solid #edf0f7',
+      borderRadius: '10px',
+      padding: '8px',
+      marginBottom: '8px'
+    },
+    memberMeta: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      minWidth: 0
+    },
+    dmMemberBtn: {
+      border: '1px solid #5b5fef',
+      backgroundColor: '#eef2ff',
+      color: '#3730a3',
+      borderRadius: '8px',
+      fontSize: '11px',
+      fontWeight: 700,
+      padding: '6px 9px',
+      cursor: 'pointer',
+      whiteSpace: 'nowrap'
     },
     privateAction: {
       width: '100%',
@@ -714,7 +788,15 @@ export default function Chat() {
 
         <div className="chat-panel" style={styles.chatCard}>
           <div style={styles.chatTop}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div
+              style={styles.headerLeft(viewMode === 'team' && !!selectedTeam)}
+              data-team-members-trigger={viewMode === 'team' && selectedTeam ? 'true' : undefined}
+              onClick={() => {
+                if (viewMode === 'team' && selectedTeam) {
+                  setShowTeamMembersCard(prev => !prev);
+                }
+              }}
+            >
               <div style={styles.avatar(viewMode === 'team' ? selectedTeam?.teamName || 'Team' : selectedDmUser || 'DM')}>
                 {getInitials(viewMode === 'team' ? selectedTeam?.teamName || 'Team' : selectedDmUser || 'DM')}
               </div>
@@ -728,8 +810,49 @@ export default function Chat() {
                   {viewMode === 'team' ? (selectedTeam?.competitionName || 'Realtime workspace') : 'Private chat'}
                 </div>
               </div>
+              {viewMode === 'team' && selectedTeam ? (
+                <div style={{ color: '#6b7280', fontSize: '12px', marginLeft: '2px' }}>▾</div>
+              ) : null}
             </div>
             <span style={styles.status}>{socketReady ? 'Live connected' : 'Reconnecting...'}</span>
+            {showTeamMembersCard && viewMode === 'team' && selectedTeam ? (
+              <div style={styles.teamMembersCard} data-team-members-card="true">
+                <div style={styles.teamMembersTitle}>
+                  Members ({selectedTeamMembers.length})
+                </div>
+                {selectedTeamMembers.map(member => {
+                  const mine = member === user?.username;
+                  return (
+                    <div key={member} style={styles.memberRow}>
+                      <div style={styles.memberMeta}>
+                        <div style={styles.avatar(member)}>{getInitials(member)}</div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: '13px', fontWeight: 700, color: '#111827', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {member}
+                          </div>
+                          <div style={{ fontSize: '11px', color: '#6b7280' }}>
+                            {member === selectedTeam.username ? 'Team Lead' : 'Member'}
+                          </div>
+                        </div>
+                      </div>
+                      {!mine ? (
+                        <button
+                          style={styles.dmMemberBtn}
+                          onClick={() => {
+                            startPrivateChat(member);
+                            setShowTeamMembersCard(false);
+                          }}
+                        >
+                          Message
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: '11px', color: '#9ca3af', fontWeight: 700 }}>You</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
 
           <div style={styles.thread}>

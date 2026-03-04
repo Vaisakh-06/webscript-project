@@ -3,23 +3,40 @@ import { AuthContext } from '../context/Authcontext';
 
 export default function Chat() {
   const { user, token } = useContext(AuthContext);
+  const [viewMode, setViewMode] = useState('team');
   const [teams, setTeams] = useState([]);
   const [selectedTeamId, setSelectedTeamId] = useState('');
   const [messages, setMessages] = useState([]);
+  const [dmConversations, setDmConversations] = useState([]);
+  const [selectedDmUser, setSelectedDmUser] = useState('');
+  const [dmMessages, setDmMessages] = useState([]);
   const [draft, setDraft] = useState('');
   const [loadingTeams, setLoadingTeams] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [loadingDmMessages, setLoadingDmMessages] = useState(false);
   const [sending, setSending] = useState(false);
   const [socketReady, setSocketReady] = useState(false);
+  const [activeProfileCardId, setActiveProfileCardId] = useState('');
+  const [unreadTeamById, setUnreadTeamById] = useState({});
+  const [unreadDmByUser, setUnreadDmByUser] = useState({});
   const [error, setError] = useState('');
+
   const endRef = useRef(null);
   const socketRef = useRef(null);
   const selectedTeamRef = useRef('');
+  const selectedDmRef = useRef('');
+  const viewModeRef = useRef('team');
+  const unreadTeamRef = useRef({});
+  const unreadDmRef = useRef({});
 
   const selectedTeam = useMemo(
     () => teams.find(team => team.id === selectedTeamId) || null,
     [teams, selectedTeamId]
   );
+
+  const unreadStorageKey = user?.username ? `teamFinderUnread_${user.username}` : null;
+  const totalTeamUnread = Object.values(unreadTeamById).reduce((sum, count) => sum + count, 0);
+  const totalDmUnread = Object.values(unreadDmByUser).reduce((sum, count) => sum + count, 0);
 
   const getInitials = (name) => {
     if (!name) return '?';
@@ -74,35 +91,157 @@ export default function Chat() {
       setMessages(data);
       setError('');
     } catch (err) {
-      setError('Could not load chat messages.');
+      setError('Could not load team chat messages.');
     } finally {
       setLoadingMessages(false);
     }
   };
 
+  const fetchDmConversations = async () => {
+    try {
+      const response = await fetch('http://localhost:8080/chat/private/conversations', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error('Failed to load direct conversations');
+      const data = await response.json();
+      setDmConversations(data);
+    } catch (err) {
+      setError('Could not load direct conversations.');
+    }
+  };
+
+  const fetchDmMessages = async (otherUsername) => {
+    if (!otherUsername) return;
+    try {
+      setLoadingDmMessages(true);
+      const response = await fetch(`http://localhost:8080/chat/private/${encodeURIComponent(otherUsername)}/messages`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error('Failed to load direct messages');
+      const data = await response.json();
+      setDmMessages(data);
+    } catch (err) {
+      setError('Could not load direct messages.');
+    } finally {
+      setLoadingDmMessages(false);
+    }
+  };
+
+  const upsertConversation = (otherUsername, lastContent, lastTimestamp) => {
+    setDmConversations(prev => {
+      const existing = prev.find(item => item.otherUsername === otherUsername);
+      if (existing) {
+        return [
+          { ...existing, lastContent, lastTimestamp },
+          ...prev.filter(item => item.otherUsername !== otherUsername)
+        ];
+      }
+      return [{ otherUsername, lastContent, lastTimestamp }, ...prev];
+    });
+  };
+
+  const startPrivateChat = (username) => {
+    if (!username || username === user?.username) return;
+    setViewMode('direct');
+    setSelectedDmUser(username);
+    fetchDmMessages(username);
+    if (!dmConversations.some(conv => conv.otherUsername === username)) {
+      upsertConversation(username, '', new Date().toISOString());
+    }
+  };
+
+  const subscribeTeam = (teamId) => {
+    const socket = socketRef.current;
+    if (!teamId || !socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ type: 'subscribe', teamId }));
+  };
+
+  const subscribePrivate = (otherUsername) => {
+    const socket = socketRef.current;
+    if (!otherUsername || !socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ type: 'private_subscribe', otherUsername }));
+  };
+
+  const persistUnreadState = (teamMap, dmMap) => {
+    if (!unreadStorageKey) return;
+    const payload = { team: teamMap, dm: dmMap };
+    localStorage.setItem(unreadStorageKey, JSON.stringify(payload));
+    window.dispatchEvent(new Event('teamfinder-unread-updated'));
+  };
+
+  const markTeamAsRead = (teamId) => {
+    if (!teamId) return;
+    setUnreadTeamById(prev => {
+      if (!prev[teamId]) return prev;
+      const next = { ...prev };
+      delete next[teamId];
+      unreadTeamRef.current = next;
+      persistUnreadState(next, unreadDmRef.current);
+      return next;
+    });
+  };
+
+  const markDmAsRead = (otherUsername) => {
+    if (!otherUsername) return;
+    setUnreadDmByUser(prev => {
+      if (!prev[otherUsername]) return prev;
+      const next = { ...prev };
+      delete next[otherUsername];
+      unreadDmRef.current = next;
+      persistUnreadState(unreadTeamRef.current, next);
+      return next;
+    });
+  };
+
   const handleSend = async () => {
     const content = draft.trim();
-    if (!content || !selectedTeamId) return;
+    if (!content) return;
+
+    const socket = socketRef.current;
+    const useSocket = socket && socket.readyState === WebSocket.OPEN;
 
     try {
       setSending(true);
-      const socket = socketRef.current;
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: 'message', teamId: selectedTeamId, content }));
+
+      if (viewMode === 'team') {
+        if (!selectedTeamId) return;
+        if (useSocket) {
+          socket.send(JSON.stringify({ type: 'message', teamId: selectedTeamId, content }));
+        } else {
+          const response = await fetch(`http://localhost:8080/chat/${selectedTeamId}/messages`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ content })
+          });
+          if (!response.ok) throw new Error('Failed to send message');
+          const newMessage = await response.json();
+          setMessages(prev => [...prev, newMessage]);
+        }
       } else {
-        const response = await fetch(`http://localhost:8080/chat/${selectedTeamId}/messages`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ content })
-        });
-        if (!response.ok) throw new Error('Failed to send message');
-        const newMessage = await response.json();
-        setMessages(prev => [...prev, newMessage]);
+        if (!selectedDmUser) return;
+        if (useSocket) {
+          socket.send(JSON.stringify({ type: 'private_message', toUsername: selectedDmUser, content }));
+        } else {
+          const response = await fetch(`http://localhost:8080/chat/private/${encodeURIComponent(selectedDmUser)}/messages`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ content })
+          });
+          if (!response.ok) throw new Error('Failed to send private message');
+          const newMessage = await response.json();
+          setDmMessages(prev => [...prev, newMessage]);
+          upsertConversation(selectedDmUser, newMessage.content, newMessage.timestamp);
+        }
       }
+
       setDraft('');
+      setError('');
     } catch (err) {
       setError('Could not send message.');
     } finally {
@@ -111,50 +250,24 @@ export default function Chat() {
   };
 
   useEffect(() => {
-    if (token) {
-      fetchMyTeams();
-    }
+    if (!token) return;
+    fetchMyTeams();
+    fetchDmConversations();
   }, [token]);
 
   useEffect(() => {
-    if (!token) return;
-
-    const wsUrl = `ws://localhost:8080/ws-chat?token=${encodeURIComponent(token)}`;
-    const socket = new WebSocket(wsUrl);
-    socketRef.current = socket;
-
-    socket.onopen = () => {
-      setSocketReady(true);
-      if (selectedTeamId) {
-        socket.send(JSON.stringify({ type: 'subscribe', teamId: selectedTeamId }));
-      }
-    };
-
-    socket.onmessage = event => {
-      try {
-        const payload = JSON.parse(event.data);
-        if (payload.type === 'message' && payload.teamId === selectedTeamRef.current && payload.message) {
-          setMessages(prev => {
-            const exists = prev.some(item => item.id === payload.message.id);
-            return exists ? prev : [...prev, payload.message];
-          });
-        }
-        if (payload.type === 'error') {
-          setError(payload.message || 'Chat socket error.');
-        }
-      } catch (e) {
-        setError('Received invalid chat payload.');
-      }
-    };
-
-    socket.onclose = () => setSocketReady(false);
-    socket.onerror = () => setError('WebSocket disconnected. Falling back to REST send.');
-
-    return () => {
-      setSocketReady(false);
-      socket.close();
-    };
-  }, [token]);
+    if (!unreadStorageKey) return;
+    try {
+      const raw = localStorage.getItem(unreadStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      setUnreadTeamById(parsed?.team || {});
+      setUnreadDmByUser(parsed?.dm || {});
+    } catch (e) {
+      setUnreadTeamById({});
+      setUnreadDmByUser({});
+    }
+  }, [unreadStorageKey]);
 
   useEffect(() => {
     if (teams.length === 0) {
@@ -172,19 +285,152 @@ export default function Chat() {
   }, [selectedTeamId]);
 
   useEffect(() => {
+    selectedDmRef.current = selectedDmUser;
+  }, [selectedDmUser]);
+
+  useEffect(() => {
+    viewModeRef.current = viewMode;
+  }, [viewMode]);
+
+  useEffect(() => {
+    unreadTeamRef.current = unreadTeamById;
+  }, [unreadTeamById]);
+
+  useEffect(() => {
+    unreadDmRef.current = unreadDmByUser;
+  }, [unreadDmByUser]);
+
+  useEffect(() => {
     if (!token || !selectedTeamId) return;
     fetchMessages(selectedTeamId);
+    markTeamAsRead(selectedTeamId);
   }, [token, selectedTeamId]);
 
   useEffect(() => {
-    const socket = socketRef.current;
-    if (!selectedTeamId || !socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify({ type: 'subscribe', teamId: selectedTeamId }));
+    if (!token || !selectedDmUser) return;
+    fetchDmMessages(selectedDmUser);
+    markDmAsRead(selectedDmUser);
+  }, [token, selectedDmUser]);
+
+  useEffect(() => {
+    if (!token) return;
+
+    const wsUrl = `ws://localhost:8080/ws-chat?token=${encodeURIComponent(token)}`;
+    const socket = new WebSocket(wsUrl);
+    socketRef.current = socket;
+
+    socket.onopen = () => {
+      setSocketReady(true);
+      if (selectedTeamRef.current) subscribeTeam(selectedTeamRef.current);
+      if (selectedDmRef.current) subscribePrivate(selectedDmRef.current);
+    };
+
+    socket.onmessage = event => {
+      try {
+        const payload = JSON.parse(event.data);
+
+        if (payload.type === 'message' && payload.message) {
+          const incomingTeamId = payload.teamId;
+          if (incomingTeamId === selectedTeamRef.current) {
+            setMessages(prev => {
+              const exists = prev.some(item => item.id === payload.message.id);
+              return exists ? prev : [...prev, payload.message];
+            });
+          }
+          if (!(viewModeRef.current === 'team' && incomingTeamId === selectedTeamRef.current)) {
+            setUnreadTeamById(prev => {
+              const next = { ...prev, [incomingTeamId]: (prev[incomingTeamId] || 0) + 1 };
+              unreadTeamRef.current = next;
+              persistUnreadState(next, unreadDmRef.current);
+              return next;
+            });
+          }
+          return;
+        }
+
+        if (payload.type === 'private_message' && payload.message) {
+          const incoming = payload.message;
+          const isCurrentThread =
+            incoming.senderUsername === selectedDmRef.current || incoming.receiverUsername === selectedDmRef.current;
+
+          if (isCurrentThread) {
+            setDmMessages(prev => {
+              const exists = prev.some(item => item.id === incoming.id);
+              return exists ? prev : [...prev, incoming];
+            });
+          }
+
+          const otherUsername =
+            incoming.senderUsername === user?.username ? incoming.receiverUsername : incoming.senderUsername;
+          upsertConversation(otherUsername, incoming.content, incoming.timestamp);
+          if (!(viewModeRef.current === 'direct' && selectedDmRef.current === otherUsername)) {
+            setUnreadDmByUser(prev => {
+              const next = { ...prev, [otherUsername]: (prev[otherUsername] || 0) + 1 };
+              unreadDmRef.current = next;
+              persistUnreadState(unreadTeamRef.current, next);
+              return next;
+            });
+          }
+          return;
+        }
+
+        if (payload.type === 'error') {
+          setError(payload.message || 'Chat socket error.');
+        }
+      } catch (e) {
+        setError('Received invalid socket payload.');
+      }
+    };
+
+    socket.onclose = () => setSocketReady(false);
+    socket.onerror = () => setError('WebSocket disconnected. Falling back to REST send.');
+
+    return () => {
+      setSocketReady(false);
+      socket.close();
+    };
+  }, [token, user?.username]);
+
+  useEffect(() => {
+    subscribeTeam(selectedTeamId);
   }, [selectedTeamId, socketReady]);
 
   useEffect(() => {
+    subscribePrivate(selectedDmUser);
+  }, [selectedDmUser, socketReady]);
+
+  useEffect(() => {
+    if (!socketReady) return;
+    teams.forEach(team => subscribeTeam(team.id));
+  }, [teams, socketReady]);
+
+  useEffect(() => {
+    if (!socketReady) return;
+    dmConversations.forEach(conv => subscribePrivate(conv.otherUsername));
+  }, [dmConversations, socketReady]);
+
+  useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, dmMessages, viewMode]);
+
+  useEffect(() => {
+    const handleOutsideClick = (event) => {
+      const target = event.target;
+      if (
+        target.closest('[data-profile-card="true"]') ||
+        target.closest('[data-profile-trigger="true"]')
+      ) {
+        return;
+      }
+      setActiveProfileCardId('');
+    };
+
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  const activeMessages = viewMode === 'team' ? messages : dmMessages;
+  const emptyInput = viewMode === 'team' ? !selectedTeamId : !selectedDmUser;
 
   const styles = {
     shell: {
@@ -195,7 +441,7 @@ export default function Chat() {
     },
     frame: {
       display: 'grid',
-      gridTemplateColumns: '280px 1fr',
+      gridTemplateColumns: '300px 1fr',
       gap: '14px',
       height: 'calc(100vh - 52px)'
     },
@@ -206,27 +452,37 @@ export default function Chat() {
       boxShadow: '0 10px 30px rgba(15, 23, 42, 0.06)',
       overflow: 'hidden'
     },
-    teamHeader: {
-      padding: '18px 16px 12px',
+    sideHeader: {
+      padding: '14px',
       borderBottom: '1px solid #eef2ff'
     },
-    teamTitle: {
-      margin: 0,
-      fontSize: '16px',
-      fontWeight: 700,
-      color: '#121826'
+    toggleWrap: {
+      display: 'grid',
+      gridTemplateColumns: '1fr 1fr',
+      gap: '8px',
+      marginBottom: '10px'
     },
-    teamSub: {
-      margin: '4px 0 0',
+    toggleBtn: (active) => ({
+      border: active ? '1px solid #c7d2fe' : '1px solid #e5e7eb',
+      background: active ? '#eef2ff' : '#fff',
+      color: active ? '#3730a3' : '#6b7280',
+      borderRadius: '999px',
+      padding: '8px 10px',
       fontSize: '12px',
-      color: '#6b7280'
+      fontWeight: 700,
+      cursor: 'pointer'
+    }),
+    toggleBtnInner: {
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '6px'
     },
-    teamScroll: {
-      height: 'calc(100% - 76px)',
+    sideScroll: {
+      height: 'calc(100% - 92px)',
       overflowY: 'auto',
-      padding: '10px 10px 14px'
+      padding: '10px'
     },
-    teamItem: (isActive) => ({
+    sideItem: (isActive) => ({
       display: 'grid',
       gridTemplateColumns: '40px 1fr',
       gap: '10px',
@@ -235,11 +491,13 @@ export default function Chat() {
       padding: '10px',
       marginBottom: '8px',
       cursor: 'pointer',
-      transition: '0.2s ease',
       backgroundColor: isActive ? '#edf2ff' : '#fff',
       border: isActive ? '1px solid #c7d2fe' : '1px solid #edf0f7'
     }),
-    teamAvatar: (name) => ({
+    sideItemMain: {
+      minWidth: 0
+    },
+    avatar: (name) => ({
       width: '40px',
       height: '40px',
       borderRadius: '50%',
@@ -249,7 +507,8 @@ export default function Chat() {
       backgroundColor: avatarColor(name),
       color: '#fff',
       fontWeight: 700,
-      fontSize: '13px'
+      fontSize: '13px',
+      flexShrink: 0
     }),
     chatCard: {
       background: '#f4f5fb',
@@ -284,8 +543,11 @@ export default function Chat() {
       gap: '10px',
       marginBottom: '14px'
     }),
-    bubble: (mine) => ({
+    bubbleWrap: {
       maxWidth: '70%',
+      position: 'relative'
+    },
+    bubble: (mine) => ({
       padding: '11px 14px',
       borderRadius: mine ? '18px 18px 6px 18px' : '18px 18px 18px 6px',
       background: mine ? 'linear-gradient(135deg, #5b5fef 0%, #6d75f7 100%)' : '#ffffff',
@@ -305,6 +567,50 @@ export default function Chat() {
       textAlign: 'right',
       opacity: mine ? 0.78 : 0.55
     }),
+    profileCard: {
+      position: 'absolute',
+      top: '-10px',
+      left: '0',
+      transform: 'translateY(-100%)',
+      minWidth: '210px',
+      backgroundColor: '#fff',
+      border: '1px solid #dfe6f4',
+      borderRadius: '12px',
+      boxShadow: '0 10px 25px rgba(15, 23, 42, 0.16)',
+      padding: '10px',
+      zIndex: 20
+    },
+    profileMeta: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '10px',
+      marginBottom: '8px'
+    },
+    privateAction: {
+      width: '100%',
+      border: '1px solid #5b5fef',
+      backgroundColor: '#eef2ff',
+      color: '#3730a3',
+      borderRadius: '8px',
+      fontSize: '12px',
+      fontWeight: 700,
+      padding: '7px 10px',
+      cursor: 'pointer'
+    },
+    unreadDot: {
+      marginLeft: '8px',
+      minWidth: '18px',
+      height: '18px',
+      borderRadius: '999px',
+      backgroundColor: '#ef4444',
+      color: '#fff',
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      fontSize: '11px',
+      fontWeight: 700,
+      padding: '0 5px'
+    },
     inputWrap: {
       backgroundColor: '#fff',
       borderTop: '1px solid #e9ecf7',
@@ -324,57 +630,102 @@ export default function Chat() {
       <style>{`
         @media (max-width: 980px) {
           .chat-frame { grid-template-columns: 1fr !important; height: auto !important; }
-          .team-panel { max-height: 300px; }
-          .chat-panel { height: 70vh; }
+          .chat-panel { height: 72vh; }
+          .side-panel { max-height: 320px; }
         }
       `}</style>
+
       {error && <p style={{ color: '#d11124' }}>{error}</p>}
 
       <div className="chat-frame" style={styles.frame}>
-        <div className="team-panel" style={styles.card}>
-          <div style={styles.teamHeader}>
-            <h2 style={styles.teamTitle}>Team Chats</h2>
-            <p style={styles.teamSub}>Pick a team to start talking</p>
+        <div className="side-panel" style={styles.card}>
+          <div style={styles.sideHeader}>
+            <div style={styles.toggleWrap}>
+              <button style={styles.toggleBtn(viewMode === 'team')} onClick={() => setViewMode('team')}>
+                <span style={styles.toggleBtnInner}>
+                  Team
+                  {totalTeamUnread > 0 ? <span style={styles.unreadDot}>{totalTeamUnread > 9 ? '9+' : totalTeamUnread}</span> : null}
+                </span>
+              </button>
+              <button style={styles.toggleBtn(viewMode === 'direct')} onClick={() => setViewMode('direct')}>
+                <span style={styles.toggleBtnInner}>
+                  Direct
+                  {totalDmUnread > 0 ? <span style={styles.unreadDot}>{totalDmUnread > 9 ? '9+' : totalDmUnread}</span> : null}
+                </span>
+              </button>
+            </div>
+            <div style={{ fontSize: '12px', color: '#6b7280' }}>
+              {viewMode === 'team' ? 'Your team channels' : '1:1 conversations'}
+            </div>
           </div>
-          <div style={styles.teamScroll}>
-          {teams.length === 0 ? (
-            <div style={{ padding: '14px', color: '#666' }}>You are not in any teams yet.</div>
-          ) : (
-            teams.map(team => (
-              <div
-                key={team.id}
-                style={styles.teamItem(team.id === selectedTeamId)}
-                onClick={() => setSelectedTeamId(team.id)}
-              >
-                <div style={styles.teamAvatar(team.teamName || team.username)}>
-                  {getInitials(team.teamName || team.username)}
-                </div>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, color: '#111827', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {team.teamName || team.competitionName || 'Untitled Team'}
+
+          <div style={styles.sideScroll}>
+            {viewMode === 'team' ? (
+              teams.length === 0 ? (
+                <div style={{ padding: '14px', color: '#666' }}>You are not in any teams yet.</div>
+              ) : (
+                teams.map(team => (
+                  <div key={team.id} style={styles.sideItem(team.id === selectedTeamId)} onClick={() => setSelectedTeamId(team.id)}>
+                    <div style={styles.avatar(team.teamName || team.username)}>{getInitials(team.teamName || team.username)}</div>
+                    <div style={styles.sideItemMain}>
+                      <div style={{ display: 'flex', alignItems: 'center' }}>
+                        <div style={{ fontWeight: 700, color: '#111827', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {team.teamName || team.competitionName || 'Untitled Team'}
+                        </div>
+                        {unreadTeamById[team.id] ? (
+                          <span style={styles.unreadDot}>{unreadTeamById[team.id] > 9 ? '9+' : unreadTeamById[team.id]}</span>
+                        ) : null}
+                      </div>
+                      <div style={{ color: '#6b7280', fontSize: '12px', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {team.competitionName || 'No competition set'}
+                      </div>
+                    </div>
                   </div>
-                  <div style={{ color: '#6b7280', fontSize: '12px', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {team.competitionName || 'No competition set'}
+                ))
+              )
+            ) : (
+              dmConversations.length === 0 ? (
+                <div style={{ padding: '14px', color: '#666' }}>No direct conversations yet.</div>
+              ) : (
+                dmConversations.map(conv => (
+                  <div
+                    key={conv.otherUsername}
+                    style={styles.sideItem(conv.otherUsername === selectedDmUser)}
+                    onClick={() => setSelectedDmUser(conv.otherUsername)}
+                  >
+                    <div style={styles.avatar(conv.otherUsername)}>{getInitials(conv.otherUsername)}</div>
+                    <div style={styles.sideItemMain}>
+                      <div style={{ display: 'flex', alignItems: 'center' }}>
+                        <div style={{ fontWeight: 700, color: '#111827' }}>{conv.otherUsername}</div>
+                        {unreadDmByUser[conv.otherUsername] ? (
+                          <span style={styles.unreadDot}>{unreadDmByUser[conv.otherUsername] > 9 ? '9+' : unreadDmByUser[conv.otherUsername]}</span>
+                        ) : null}
+                      </div>
+                      <div style={{ color: '#6b7280', fontSize: '12px', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {conv.lastContent || 'Start chatting...'}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            ))
-          )}
+                ))
+              )
+            )}
           </div>
         </div>
 
         <div className="chat-panel" style={styles.chatCard}>
           <div style={styles.chatTop}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <div style={styles.teamAvatar(selectedTeam?.teamName || 'Team Chat')}>
-                {getInitials(selectedTeam?.teamName || 'Chat')}
+              <div style={styles.avatar(viewMode === 'team' ? selectedTeam?.teamName || 'Team' : selectedDmUser || 'DM')}>
+                {getInitials(viewMode === 'team' ? selectedTeam?.teamName || 'Team' : selectedDmUser || 'DM')}
               </div>
               <div>
                 <div style={{ fontWeight: 700, color: '#111827' }}>
-                  {selectedTeam ? (selectedTeam.teamName || selectedTeam.competitionName || 'Team Chat') : 'Select a team'}
+                  {viewMode === 'team'
+                    ? (selectedTeam ? (selectedTeam.teamName || selectedTeam.competitionName || 'Team Chat') : 'Select a team')
+                    : (selectedDmUser || 'Select a person')}
                 </div>
                 <div style={{ fontSize: '12px', color: '#6b7280' }}>
-                  {selectedTeam?.competitionName || 'Realtime workspace'}
+                  {viewMode === 'team' ? (selectedTeam?.competitionName || 'Realtime workspace') : 'Private chat'}
                 </div>
               </div>
             </div>
@@ -382,28 +733,61 @@ export default function Chat() {
           </div>
 
           <div style={styles.thread}>
-            {!selectedTeam ? (
+            {viewMode === 'team' && !selectedTeam ? (
               <p style={{ color: '#666' }}>Choose a team to open chat.</p>
-            ) : loadingMessages ? (
+            ) : viewMode === 'direct' && !selectedDmUser ? (
+              <p style={{ color: '#666' }}>Hover a teammate message and click "Message privately".</p>
+            ) : loadingMessages && viewMode === 'team' ? (
               <p style={{ color: '#666' }}>Loading messages...</p>
-            ) : messages.length === 0 ? (
+            ) : loadingDmMessages && viewMode === 'direct' ? (
+              <p style={{ color: '#666' }}>Loading direct messages...</p>
+            ) : activeMessages.length === 0 ? (
               <p style={{ color: '#666' }}>No messages yet. Start the conversation.</p>
             ) : (
-              messages.map(msg => (
-                <div key={msg.id} style={styles.row(msg.senderUsername === user?.username)}>
-                  {msg.senderUsername !== user?.username && (
-                    <div style={styles.teamAvatar(msg.senderUsername)}>{getInitials(msg.senderUsername)}</div>
-                  )}
-                  <div style={styles.bubble(msg.senderUsername === user?.username)}>
-                    <div style={styles.msgName(msg.senderUsername === user?.username)}>{msg.senderUsername}</div>
-                    <div>{msg.content}</div>
-                    <div style={styles.msgTime(msg.senderUsername === user?.username)}>{formatTime(msg.timestamp)}</div>
+              activeMessages.map(msg => {
+                const mine = msg.senderUsername === user?.username;
+                const canPrivate = viewMode === 'team' && !mine;
+                return (
+                  <div key={msg.id} style={styles.row(mine)}>
+                    {!mine && <div style={styles.avatar(msg.senderUsername)}>{getInitials(msg.senderUsername)}</div>}
+                    <div style={styles.bubbleWrap}>
+                      <div
+                        style={styles.bubble(mine)}
+                        data-profile-trigger={canPrivate ? 'true' : undefined}
+                        onClick={() => {
+                          if (!canPrivate) return;
+                          setActiveProfileCardId(prev => (prev === msg.id ? '' : msg.id));
+                        }}
+                      >
+                        <div style={styles.msgName(mine)}>{msg.senderUsername}</div>
+                        <div>{msg.content}</div>
+                        <div style={styles.msgTime(mine)}>{formatTime(msg.timestamp)}</div>
+                      </div>
+                      {canPrivate && activeProfileCardId === msg.id && (
+                        <div style={styles.profileCard} data-profile-card="true">
+                          <div style={styles.profileMeta}>
+                            <div style={styles.avatar(msg.senderUsername)}>{getInitials(msg.senderUsername)}</div>
+                            <div>
+                              <div style={{ fontWeight: 700, color: '#111827', fontSize: '13px' }}>{msg.senderUsername}</div>
+                              <div style={{ color: '#6b7280', fontSize: '11px' }}>Team member</div>
+                            </div>
+                          </div>
+                          <button
+                            style={styles.privateAction}
+                            onClick={() => {
+                              startPrivateChat(msg.senderUsername);
+                              setActiveProfileCardId('');
+                            }}
+                          >
+                            Message privately
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    {mine && <div style={styles.avatar(msg.senderUsername)}>{getInitials(msg.senderUsername)}</div>}
                   </div>
-                  {msg.senderUsername === user?.username && (
-                    <div style={styles.teamAvatar(msg.senderUsername)}>{getInitials(msg.senderUsername)}</div>
-                  )}
-                </div>
-              ))
+                );
+              })
             )}
             <div ref={endRef} />
           </div>
@@ -411,13 +795,13 @@ export default function Chat() {
           <div style={styles.inputWrap}>
             <input
               type="text"
-              placeholder={selectedTeam ? 'Type a message...' : 'Select a team first'}
+              placeholder={emptyInput ? 'Select a chat first' : 'Type a message...'}
               value={draft}
               onChange={e => setDraft(e.target.value)}
               onKeyDown={e => {
                 if (e.key === 'Enter') handleSend();
               }}
-              disabled={!selectedTeam || sending}
+              disabled={emptyInput || sending}
               style={{
                 flex: 1,
                 padding: '12px 14px',
@@ -429,7 +813,7 @@ export default function Chat() {
             />
             <button
               onClick={handleSend}
-              disabled={!selectedTeam || sending || !draft.trim()}
+              disabled={emptyInput || sending || !draft.trim()}
               style={{
                 padding: '11px 18px',
                 border: 'none',
@@ -437,7 +821,7 @@ export default function Chat() {
                 background: 'linear-gradient(135deg, #5b5fef 0%, #6d75f7 100%)',
                 color: '#fff',
                 cursor: 'pointer',
-                opacity: !selectedTeam || sending || !draft.trim() ? 0.6 : 1,
+                opacity: emptyInput || sending || !draft.trim() ? 0.6 : 1,
                 fontWeight: 700
               }}
             >

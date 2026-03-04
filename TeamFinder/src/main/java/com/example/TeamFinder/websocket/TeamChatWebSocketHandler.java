@@ -1,7 +1,9 @@
 package com.example.TeamFinder.websocket;
 
 import com.example.TeamFinder.entity.ChatMessage;
+import com.example.TeamFinder.entity.PrivateMessage;
 import com.example.TeamFinder.service.ChatService;
+import com.example.TeamFinder.service.PrivateMessageService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,11 +23,16 @@ import java.util.concurrent.ConcurrentHashMap;
 public class TeamChatWebSocketHandler extends TextWebSocketHandler {
 
     private final Map<String, Set<WebSocketSession>> teamSubscribers = new ConcurrentHashMap<>();
+    private final Map<String, Set<WebSocketSession>> privateSubscribers = new ConcurrentHashMap<>();
     private final Map<String, Set<String>> sessionTeams = new ConcurrentHashMap<>();
+    private final Map<String, Set<String>> sessionPrivateKeys = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
     @Autowired
     private ChatService chatService;
+
+    @Autowired
+    private PrivateMessageService privateMessageService;
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
@@ -56,6 +63,16 @@ public class TeamChatWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
+        if ("private_subscribe".equals(type)) {
+            handlePrivateSubscribe(session, username, payload);
+            return;
+        }
+
+        if ("private_message".equals(type)) {
+            handlePrivateMessage(session, username, payload);
+            return;
+        }
+
         sendError(session, "Unknown message type");
     }
 
@@ -69,6 +86,19 @@ public class TeamChatWebSocketHandler extends TextWebSocketHandler {
                     subscribers.remove(session);
                     if (subscribers.isEmpty()) {
                         teamSubscribers.remove(teamId);
+                    }
+                }
+            }
+        }
+
+        Set<String> privateKeys = sessionPrivateKeys.remove(session.getId());
+        if (privateKeys != null) {
+            for (String key : privateKeys) {
+                Set<WebSocketSession> subscribers = privateSubscribers.get(key);
+                if (subscribers != null) {
+                    subscribers.remove(session);
+                    if (subscribers.isEmpty()) {
+                        privateSubscribers.remove(key);
                     }
                 }
             }
@@ -91,6 +121,25 @@ public class TeamChatWebSocketHandler extends TextWebSocketHandler {
         sessionTeams.computeIfAbsent(session.getId(), key -> ConcurrentHashMap.newKeySet()).add(teamId);
 
         sendJson(session, Map.of("type", "subscribed", "teamId", teamId));
+    }
+
+    private void handlePrivateSubscribe(WebSocketSession session, String username, JsonNode payload) throws IOException {
+        String otherUsername = payload.path("otherUsername").asText("").trim();
+        if (otherUsername.isEmpty()) {
+            sendError(session, "Missing otherUsername");
+            return;
+        }
+
+        if (!privateMessageService.canOpenConversation(username, otherUsername)) {
+            sendError(session, "Cannot open private conversation");
+            return;
+        }
+
+        String key = privateMessageService.getConversationKey(username, otherUsername);
+        privateSubscribers.computeIfAbsent(key, item -> ConcurrentHashMap.newKeySet()).add(session);
+        sessionPrivateKeys.computeIfAbsent(session.getId(), item -> ConcurrentHashMap.newKeySet()).add(key);
+
+        sendJson(session, Map.of("type", "private_subscribed", "conversationKey", key));
     }
 
     private void handleChatMessage(WebSocketSession session, String username, JsonNode payload) throws IOException {
@@ -116,6 +165,40 @@ public class TeamChatWebSocketHandler extends TextWebSocketHandler {
         String json = objectMapper.writeValueAsString(Map.of(
                 "type", "message",
                 "teamId", teamId,
+                "message", saved.get()
+        ));
+
+        for (WebSocketSession subscriber : subscribers) {
+            if (subscriber.isOpen()) {
+                subscriber.sendMessage(new TextMessage(json));
+            }
+        }
+    }
+
+    private void handlePrivateMessage(WebSocketSession session, String username, JsonNode payload) throws IOException {
+        String toUsername = payload.path("toUsername").asText("").trim();
+        String content = payload.path("content").asText("").trim();
+
+        if (toUsername.isEmpty() || content.isEmpty()) {
+            sendError(session, "toUsername and content are required");
+            return;
+        }
+
+        Optional<PrivateMessage> saved = privateMessageService.sendPrivateMessage(username, toUsername, content);
+        if (saved.isEmpty()) {
+            sendError(session, "Cannot send private message");
+            return;
+        }
+
+        String key = saved.get().getParticipantsKey();
+        Set<WebSocketSession> subscribers = privateSubscribers.get(key);
+        if (subscribers == null || subscribers.isEmpty()) {
+            return;
+        }
+
+        String json = objectMapper.writeValueAsString(Map.of(
+                "type", "private_message",
+                "conversationKey", key,
                 "message", saved.get()
         ));
 

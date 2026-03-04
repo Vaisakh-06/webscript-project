@@ -65,6 +65,11 @@ public class ChatService {
         return Optional.of(saved);
     }
 
+    public boolean canAccessTeam(String teamId, String username) {
+        Optional<Post> postOpt = postRepository.findById(teamId);
+        return postOpt.filter(post -> isTeamMember(post, username)).isPresent();
+    }
+
     private boolean isTeamMember(Post post, String username) {
         if (matchesUser(post.getUsername(), username)) {
             return true;

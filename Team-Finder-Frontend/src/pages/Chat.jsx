@@ -10,8 +10,11 @@ export default function Chat() {
   const [loadingTeams, setLoadingTeams] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sending, setSending] = useState(false);
+  const [socketReady, setSocketReady] = useState(false);
   const [error, setError] = useState('');
   const endRef = useRef(null);
+  const socketRef = useRef(null);
+  const selectedTeamRef = useRef('');
 
   const selectedTeam = useMemo(
     () => teams.find(team => team.id === selectedTeamId) || null,
@@ -37,10 +40,10 @@ export default function Chat() {
     }
   };
 
-  const fetchMessages = async (teamId, silent = false) => {
+  const fetchMessages = async (teamId) => {
     if (!teamId) return;
     try {
-      if (!silent) setLoadingMessages(true);
+      setLoadingMessages(true);
       const response = await fetch(`http://localhost:8080/chat/${teamId}/messages`, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -51,7 +54,7 @@ export default function Chat() {
     } catch (err) {
       setError('Could not load chat messages.');
     } finally {
-      if (!silent) setLoadingMessages(false);
+      setLoadingMessages(false);
     }
   };
 
@@ -61,18 +64,22 @@ export default function Chat() {
 
     try {
       setSending(true);
-      const response = await fetch(`http://localhost:8080/chat/${selectedTeamId}/messages`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ content })
-      });
-
-      if (!response.ok) throw new Error('Failed to send message');
-      const newMessage = await response.json();
-      setMessages(prev => [...prev, newMessage]);
+      const socket = socketRef.current;
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'message', teamId: selectedTeamId, content }));
+      } else {
+        const response = await fetch(`http://localhost:8080/chat/${selectedTeamId}/messages`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ content })
+        });
+        if (!response.ok) throw new Error('Failed to send message');
+        const newMessage = await response.json();
+        setMessages(prev => [...prev, newMessage]);
+      }
       setDraft('');
     } catch (err) {
       setError('Could not send message.');
@@ -88,6 +95,46 @@ export default function Chat() {
   }, [token]);
 
   useEffect(() => {
+    if (!token) return;
+
+    const wsUrl = `ws://localhost:8080/ws-chat?token=${encodeURIComponent(token)}`;
+    const socket = new WebSocket(wsUrl);
+    socketRef.current = socket;
+
+    socket.onopen = () => {
+      setSocketReady(true);
+      if (selectedTeamId) {
+        socket.send(JSON.stringify({ type: 'subscribe', teamId: selectedTeamId }));
+      }
+    };
+
+    socket.onmessage = event => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload.type === 'message' && payload.teamId === selectedTeamRef.current && payload.message) {
+          setMessages(prev => {
+            const exists = prev.some(item => item.id === payload.message.id);
+            return exists ? prev : [...prev, payload.message];
+          });
+        }
+        if (payload.type === 'error') {
+          setError(payload.message || 'Chat socket error.');
+        }
+      } catch (e) {
+        setError('Received invalid chat payload.');
+      }
+    };
+
+    socket.onclose = () => setSocketReady(false);
+    socket.onerror = () => setError('WebSocket disconnected. Falling back to REST send.');
+
+    return () => {
+      setSocketReady(false);
+      socket.close();
+    };
+  }, [token]);
+
+  useEffect(() => {
     if (teams.length === 0) {
       setSelectedTeamId('');
       return;
@@ -99,15 +146,19 @@ export default function Chat() {
   }, [teams, selectedTeamId]);
 
   useEffect(() => {
+    selectedTeamRef.current = selectedTeamId;
+  }, [selectedTeamId]);
+
+  useEffect(() => {
     if (!token || !selectedTeamId) return;
-
     fetchMessages(selectedTeamId);
-    const timer = setInterval(() => {
-      fetchMessages(selectedTeamId, true);
-    }, 3000);
-
-    return () => clearInterval(timer);
   }, [token, selectedTeamId]);
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!selectedTeamId || !socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ type: 'subscribe', teamId: selectedTeamId }));
+  }, [selectedTeamId, socketReady]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -174,6 +225,9 @@ export default function Chat() {
   return (
     <div style={styles.wrapper}>
       <h1 style={{ marginBottom: '16px' }}>Team Chat</h1>
+      <p style={{ marginTop: '-8px', color: socketReady ? '#057642' : '#666', fontSize: '13px' }}>
+        {socketReady ? 'Live: connected' : 'Live: reconnecting...'}
+      </p>
       {error && <p style={{ color: '#d11124' }}>{error}</p>}
 
       <div style={styles.layout}>

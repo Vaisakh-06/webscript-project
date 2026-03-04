@@ -39,7 +39,7 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .authorizeHttpRequests(auth -> auth
                         // 1. ADD "/error" TO THIS LIST to stop the redirect trap
-                        .requestMatchers("/public/**", "/user/signup", "/user/login", "/admin/**", "/error").permitAll()
+                        .requestMatchers("/public/**", "/user/signup", "/user/login", "/admin/**", "/error", "/ws-chat/**").permitAll()
 
                         // 2. USE "hasAnyAuthority" TO CATCH BOTH PREFIX FORMATS
                         .requestMatchers("/events/add", "/events/delete/**").hasAnyAuthority("PRESIDENT", "ROLE_PRESIDENT")

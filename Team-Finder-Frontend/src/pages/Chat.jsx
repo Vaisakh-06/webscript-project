@@ -21,6 +21,28 @@ export default function Chat() {
     [teams, selectedTeamId]
   );
 
+  const getInitials = (name) => {
+    if (!name) return '?';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  };
+
+  const avatarPalette = ['#5E81F4', '#49C9A9', '#F38BA8', '#6C63FF', '#F59E0B', '#22C55E', '#EF4444'];
+  const avatarColor = (name) => {
+    let hash = 0;
+    const value = name || '';
+    for (let i = 0; i < value.length; i += 1) hash = value.charCodeAt(i) + ((hash << 5) - hash);
+    return avatarPalette[Math.abs(hash) % avatarPalette.length];
+  };
+
+  const formatTime = (value) => {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
   const fetchMyTeams = async () => {
     try {
       setLoadingTeams(true);
@@ -165,56 +187,131 @@ export default function Chat() {
   }, [messages]);
 
   const styles = {
-    wrapper: {
-      maxWidth: '1100px',
-      margin: '24px auto',
-      padding: '0 16px',
-      fontFamily: 'Arial, sans-serif'
+    shell: {
+      maxWidth: '1240px',
+      margin: '18px auto',
+      padding: '0 14px',
+      fontFamily: '"Segoe UI", "SF Pro Text", Tahoma, sans-serif'
     },
-    layout: {
+    frame: {
       display: 'grid',
-      gridTemplateColumns: '300px 1fr',
-      gap: '16px'
+      gridTemplateColumns: '280px 1fr',
+      gap: '14px',
+      height: 'calc(100vh - 52px)'
     },
-    panel: {
-      backgroundColor: '#fff',
-      border: '1px solid #e0e0e0',
-      borderRadius: '12px',
+    card: {
+      background: 'linear-gradient(180deg, #ffffff 0%, #f8f9ff 100%)',
+      borderRadius: '22px',
+      border: '1px solid #e5e7eb',
+      boxShadow: '0 10px 30px rgba(15, 23, 42, 0.06)',
       overflow: 'hidden'
     },
-    teamItem: isActive => ({
-      padding: '12px 14px',
-      borderBottom: '1px solid #f0f0f0',
-      backgroundColor: isActive ? '#e8f3ff' : '#fff',
-      cursor: 'pointer'
-    }),
-    chatHeader: {
-      padding: '14px 16px',
-      borderBottom: '1px solid #e0e0e0',
-      fontWeight: 'bold'
+    teamHeader: {
+      padding: '18px 16px 12px',
+      borderBottom: '1px solid #eef2ff'
     },
-    messageArea: {
-      height: '460px',
+    teamTitle: {
+      margin: 0,
+      fontSize: '16px',
+      fontWeight: 700,
+      color: '#121826'
+    },
+    teamSub: {
+      margin: '4px 0 0',
+      fontSize: '12px',
+      color: '#6b7280'
+    },
+    teamScroll: {
+      height: 'calc(100% - 76px)',
       overflowY: 'auto',
-      padding: '16px',
-      backgroundColor: '#fafafa'
+      padding: '10px 10px 14px'
     },
-    bubble: isMine => ({
-      maxWidth: '70%',
-      marginBottom: '10px',
-      marginLeft: isMine ? 'auto' : '0',
-      padding: '10px 12px',
-      borderRadius: '12px',
-      backgroundColor: isMine ? '#0a66c2' : '#fff',
-      color: isMine ? '#fff' : '#222',
-      border: isMine ? 'none' : '1px solid #e8e8e8'
+    teamItem: (isActive) => ({
+      display: 'grid',
+      gridTemplateColumns: '40px 1fr',
+      gap: '10px',
+      alignItems: 'center',
+      borderRadius: '14px',
+      padding: '10px',
+      marginBottom: '8px',
+      cursor: 'pointer',
+      transition: '0.2s ease',
+      backgroundColor: isActive ? '#edf2ff' : '#fff',
+      border: isActive ? '1px solid #c7d2fe' : '1px solid #edf0f7'
     }),
-    inputRow: {
+    teamAvatar: (name) => ({
+      width: '40px',
+      height: '40px',
+      borderRadius: '50%',
       display: 'flex',
-      gap: '8px',
-      padding: '12px',
-      borderTop: '1px solid #e0e0e0',
-      backgroundColor: '#fff'
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: avatarColor(name),
+      color: '#fff',
+      fontWeight: 700,
+      fontSize: '13px'
+    }),
+    chatCard: {
+      background: '#f4f5fb',
+      borderRadius: '22px',
+      border: '1px solid #e5e7eb',
+      overflow: 'hidden',
+      display: 'grid',
+      gridTemplateRows: '74px 1fr 72px'
+    },
+    chatTop: {
+      backgroundColor: '#fff',
+      borderBottom: '1px solid #e9ecf7',
+      padding: '14px 16px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between'
+    },
+    status: {
+      fontSize: '12px',
+      color: socketReady ? '#059669' : '#6b7280',
+      fontWeight: 600
+    },
+    thread: {
+      overflowY: 'auto',
+      padding: '18px 22px',
+      background: 'radial-gradient(circle at top right, #eef2ff 0%, #f4f5fb 48%, #f8fafc 100%)'
+    },
+    row: (mine) => ({
+      display: 'flex',
+      alignItems: 'flex-end',
+      justifyContent: mine ? 'flex-end' : 'flex-start',
+      gap: '10px',
+      marginBottom: '14px'
+    }),
+    bubble: (mine) => ({
+      maxWidth: '70%',
+      padding: '11px 14px',
+      borderRadius: mine ? '18px 18px 6px 18px' : '18px 18px 18px 6px',
+      background: mine ? 'linear-gradient(135deg, #5b5fef 0%, #6d75f7 100%)' : '#ffffff',
+      color: mine ? '#fff' : '#111827',
+      border: mine ? 'none' : '1px solid #e5e7eb',
+      boxShadow: mine ? '0 6px 18px rgba(91, 95, 239, 0.35)' : '0 4px 12px rgba(17, 24, 39, 0.06)'
+    }),
+    msgName: (mine) => ({
+      fontSize: '11px',
+      marginBottom: '3px',
+      opacity: mine ? 0.9 : 0.65,
+      fontWeight: 700
+    }),
+    msgTime: (mine) => ({
+      marginTop: '4px',
+      fontSize: '10px',
+      textAlign: 'right',
+      opacity: mine ? 0.78 : 0.55
+    }),
+    inputWrap: {
+      backgroundColor: '#fff',
+      borderTop: '1px solid #e9ecf7',
+      padding: '14px 16px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '10px'
     }
   };
 
@@ -223,18 +320,23 @@ export default function Chat() {
   }
 
   return (
-    <div style={styles.wrapper}>
-      <h1 style={{ marginBottom: '16px' }}>Team Chat</h1>
-      <p style={{ marginTop: '-8px', color: socketReady ? '#057642' : '#666', fontSize: '13px' }}>
-        {socketReady ? 'Live: connected' : 'Live: reconnecting...'}
-      </p>
+    <div style={styles.shell}>
+      <style>{`
+        @media (max-width: 980px) {
+          .chat-frame { grid-template-columns: 1fr !important; height: auto !important; }
+          .team-panel { max-height: 300px; }
+          .chat-panel { height: 70vh; }
+        }
+      `}</style>
       {error && <p style={{ color: '#d11124' }}>{error}</p>}
 
-      <div style={styles.layout}>
-        <div style={styles.panel}>
-          <div style={{ padding: '12px 14px', borderBottom: '1px solid #e0e0e0', fontWeight: 'bold' }}>
-            My Teams
+      <div className="chat-frame" style={styles.frame}>
+        <div className="team-panel" style={styles.card}>
+          <div style={styles.teamHeader}>
+            <h2 style={styles.teamTitle}>Team Chats</h2>
+            <p style={styles.teamSub}>Pick a team to start talking</p>
           </div>
+          <div style={styles.teamScroll}>
           {teams.length === 0 ? (
             <div style={{ padding: '14px', color: '#666' }}>You are not in any teams yet.</div>
           ) : (
@@ -244,23 +346,42 @@ export default function Chat() {
                 style={styles.teamItem(team.id === selectedTeamId)}
                 onClick={() => setSelectedTeamId(team.id)}
               >
-                <div style={{ fontWeight: 'bold', color: '#111' }}>
-                  {team.teamName || team.competitionName || 'Untitled Team'}
+                <div style={styles.teamAvatar(team.teamName || team.username)}>
+                  {getInitials(team.teamName || team.username)}
                 </div>
-                <div style={{ color: '#666', fontSize: '12px', marginTop: '4px' }}>
-                  {team.competitionName || 'No competition set'}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, color: '#111827', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {team.teamName || team.competitionName || 'Untitled Team'}
+                  </div>
+                  <div style={{ color: '#6b7280', fontSize: '12px', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {team.competitionName || 'No competition set'}
+                  </div>
                 </div>
               </div>
             ))
           )}
+          </div>
         </div>
 
-        <div style={styles.panel}>
-          <div style={styles.chatHeader}>
-            {selectedTeam ? (selectedTeam.teamName || selectedTeam.competitionName || 'Team Chat') : 'Select a team'}
+        <div className="chat-panel" style={styles.chatCard}>
+          <div style={styles.chatTop}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div style={styles.teamAvatar(selectedTeam?.teamName || 'Team Chat')}>
+                {getInitials(selectedTeam?.teamName || 'Chat')}
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, color: '#111827' }}>
+                  {selectedTeam ? (selectedTeam.teamName || selectedTeam.competitionName || 'Team Chat') : 'Select a team'}
+                </div>
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>
+                  {selectedTeam?.competitionName || 'Realtime workspace'}
+                </div>
+              </div>
+            </div>
+            <span style={styles.status}>{socketReady ? 'Live connected' : 'Reconnecting...'}</span>
           </div>
 
-          <div style={styles.messageArea}>
+          <div style={styles.thread}>
             {!selectedTeam ? (
               <p style={{ color: '#666' }}>Choose a team to open chat.</p>
             ) : loadingMessages ? (
@@ -269,18 +390,25 @@ export default function Chat() {
               <p style={{ color: '#666' }}>No messages yet. Start the conversation.</p>
             ) : (
               messages.map(msg => (
-                <div key={msg.id} style={styles.bubble(msg.senderUsername === user?.username)}>
-                  <div style={{ fontSize: '12px', opacity: 0.8, marginBottom: '4px', fontWeight: 'bold' }}>
-                    {msg.senderUsername}
+                <div key={msg.id} style={styles.row(msg.senderUsername === user?.username)}>
+                  {msg.senderUsername !== user?.username && (
+                    <div style={styles.teamAvatar(msg.senderUsername)}>{getInitials(msg.senderUsername)}</div>
+                  )}
+                  <div style={styles.bubble(msg.senderUsername === user?.username)}>
+                    <div style={styles.msgName(msg.senderUsername === user?.username)}>{msg.senderUsername}</div>
+                    <div>{msg.content}</div>
+                    <div style={styles.msgTime(msg.senderUsername === user?.username)}>{formatTime(msg.timestamp)}</div>
                   </div>
-                  <div>{msg.content}</div>
+                  {msg.senderUsername === user?.username && (
+                    <div style={styles.teamAvatar(msg.senderUsername)}>{getInitials(msg.senderUsername)}</div>
+                  )}
                 </div>
               ))
             )}
             <div ref={endRef} />
           </div>
 
-          <div style={styles.inputRow}>
+          <div style={styles.inputWrap}>
             <input
               type="text"
               placeholder={selectedTeam ? 'Type a message...' : 'Select a team first'}
@@ -292,22 +420,25 @@ export default function Chat() {
               disabled={!selectedTeam || sending}
               style={{
                 flex: 1,
-                padding: '10px 12px',
-                borderRadius: '8px',
-                border: '1px solid #ccc'
+                padding: '12px 14px',
+                borderRadius: '999px',
+                border: '1px solid #d8deeb',
+                backgroundColor: '#f8fafc',
+                outline: 'none'
               }}
             />
             <button
               onClick={handleSend}
               disabled={!selectedTeam || sending || !draft.trim()}
               style={{
-                padding: '10px 16px',
+                padding: '11px 18px',
                 border: 'none',
-                borderRadius: '8px',
-                backgroundColor: '#0a66c2',
+                borderRadius: '999px',
+                background: 'linear-gradient(135deg, #5b5fef 0%, #6d75f7 100%)',
                 color: '#fff',
                 cursor: 'pointer',
-                opacity: !selectedTeam || sending || !draft.trim() ? 0.6 : 1
+                opacity: !selectedTeam || sending || !draft.trim() ? 0.6 : 1,
+                fontWeight: 700
               }}
             >
               Send
